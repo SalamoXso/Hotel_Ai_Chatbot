@@ -14,6 +14,8 @@ class User(db.Model):
     conversations = db.relationship('Conversation', back_populates='user', lazy=True)
     memories = db.relationship('Memory', back_populates='user', lazy=True)
     follow_ups = db.relationship('FollowUp', back_populates='user', lazy=True)
+    reservations = db.relationship('Reservation', back_populates='user', lazy=True)
+    reviews = db.relationship('Review', back_populates='user', lazy=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -25,6 +27,68 @@ class User(db.Model):
 
     def __repr__(self):
         return f'<User {self.username}>'
+
+class Hotel(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    location = db.Column(db.String(200), nullable=False)  # e.g., "New York, USA"
+    description = db.Column(db.Text, nullable=False)
+    rating = db.Column(db.Float, default=0.0)  # Average rating from reviews
+    amenities = db.Column(db.String(500), nullable=False)  # e.g., "Pool, Gym, Spa"
+    rooms = db.relationship('Room', back_populates='hotel', lazy=True)
+    reviews = db.relationship('Review', back_populates='hotel', lazy=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    def __repr__(self):
+        return f'<Hotel {self.name}>'
+
+class Room(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    hotel_id = db.Column(db.Integer, db.ForeignKey('hotel.id'), nullable=False)
+    room_type = db.Column(db.String(100), nullable=False)  # e.g., "Single", "Double", "Suite"
+    description = db.Column(db.Text, nullable=False)
+    price_per_night = db.Column(db.Float, nullable=False)
+    availability = db.Column(db.Boolean, default=True)  # True if available
+    max_guests = db.Column(db.Integer, nullable=False)
+    amenities = db.Column(db.String(500), nullable=False)  # e.g., "WiFi, AC, TV"
+    reservations = db.relationship('Reservation', back_populates='room', lazy=True)
+    hotel = db.relationship('Hotel', back_populates='rooms')
+
+    def __repr__(self):
+        return f'<Room {self.room_type} at Hotel {self.hotel_id}>'
+
+class Reservation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    room_id = db.Column(db.Integer, db.ForeignKey('room.id'), nullable=False)
+    check_in_date = db.Column(db.DateTime, nullable=False)
+    check_out_date = db.Column(db.DateTime, nullable=False)
+    total_price = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(50), default="confirmed")  # e.g., "confirmed", "cancelled"
+    user = db.relationship('User', back_populates='reservations')
+    room = db.relationship('Room', back_populates='reservations')
+
+    def __repr__(self):
+        return f'<Reservation {self.id}>'
+
+class Review(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    hotel_id = db.Column(db.Integer, db.ForeignKey('hotel.id'), nullable=False)
+    rating = db.Column(db.Integer, nullable=False)  # e.g., 1 to 5
+    comment = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    user = db.relationship('User', back_populates='reviews')
+    hotel = db.relationship('Hotel', back_populates='reviews')
+
+    __table_args__ = (
+        CheckConstraint("rating >= 1 AND rating <= 5", name='valid_rating'),
+    )
+
+    def __repr__(self):
+        return f'<Review {self.id} by User {self.user_id}>'
 
 class Conversation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -77,32 +141,3 @@ class FollowUp(db.Model):
 
     def __repr__(self):
         return f'<FollowUp {self.id}>'
-    
-
-# Add this to models.py
-class Room(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    room_type = db.Column(db.String(100), nullable=False)  # e.g., "Single", "Double", "Suite"
-    description = db.Column(db.String(500), nullable=False)
-    price_per_night = db.Column(db.Float, nullable=False)
-    availability = db.Column(db.Boolean, default=True)  # True if available
-    max_guests = db.Column(db.Integer, nullable=False)
-    amenities = db.Column(db.String(500), nullable=False)  # e.g., "WiFi, AC, TV"
-
-    def __repr__(self):
-        return f'<Room {self.room_type}>'
-
-class Reservation(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    room_id = db.Column(db.Integer, db.ForeignKey('room.id'), nullable=False)
-    check_in_date = db.Column(db.DateTime, nullable=False)
-    check_out_date = db.Column(db.DateTime, nullable=False)
-    total_price = db.Column(db.Float, nullable=False)
-    status = db.Column(db.String(50), default="confirmed")  # e.g., "confirmed", "cancelled"
-
-    user = db.relationship('User', backref='reservations')
-    room = db.relationship('Room', backref='reservations')
-
-    def __repr__(self):
-        return f'<Reservation {self.id}>'    
