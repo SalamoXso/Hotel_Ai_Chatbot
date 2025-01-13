@@ -12,22 +12,27 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from flask_migrate import Migrate
 import re
 import requests
-from models import Room ,Reservation,User ,db # Import the Room model
+from models import Room, Reservation, User, db  # Import the Room model
 from datetime import datetime
 from nlp_utils import calculate_total_price  # Import the function
 from nlp_utils import get_available_rooms  # Import the function
-
-
+from flask import make_response
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
-
+# Enable CORS for all routes, allow credentials, and specify the frontend origin
+CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
+# Determine if the app is running in production
+is_production = os.getenv("FLASK_ENV") == "production"
 # Configure PostgreSQL database
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL", "postgresql://postgres:HelloHackers1994%40%2A@localhost:5432/hotel_chatbot_ai_db")
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL", "postgresql://postgres:HelloHackers1994%40%2A@localhost:5432/hotel_ai_chatbot_db")
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.secret_key = os.getenv("SECRET_KEY", "mysecretkey")
+app.secret_key = "your_secret_key"
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # Allow cross-origin cookies
+app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
+app.config['SESSION_COOKIE_HTTPONLY'] = True  # Prevent client-side script access
 
 db.init_app(app)
 migrate = Migrate(app, db)
@@ -39,106 +44,7 @@ scheduler = BackgroundScheduler()
 base_url = "https://api.llama-api.com"
 api_key = os.getenv("LLAMA_API_KEY")  # Ensure this is set in your .env file
 
-# Check for follow-ups
-def check_follow_ups():
-    with app.app_context():  # Ensure database operations run within Flask's context
-        conversations = Conversation.query.filter(Conversation.follow_up_date <= datetime.now()).all()
-        for conversation in conversations:
-            send_follow_up_message(conversation.user_id)
-
-# Send follow-up message
-def send_follow_up_message(user_id):
-    user = db.session.get(User, user_id)
-    message = "Just checking in! Do you need help with anything else for your upcoming reservation?"
-    send_message_to_user(user, message)
-
-# Placeholder function for sending messages
-def send_message_to_user(user, message):
-    print(f"Follow-up sent to {user.username}: {message}")
-
-# Schedule follow-up task
-scheduler.add_job(func=check_follow_ups, trigger="interval", days=1)
-scheduler.start()
-
-# Routes
-@app.route('/')
-def home():
-    return render_template("index.html")
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'GET':
-        return render_template("register.html")
-
-    if request.method == 'POST':
-        try:
-            data = request.get_json()
-            username = data['username']
-            email = data['email']
-            password = data['password']
-
-            existing_user = User.query.filter_by(username=username).first()
-            if existing_user:
-                return jsonify({"error": "Username already exists. Please choose another one."}), 400
-
-            hashed_password = generate_password_hash(password)
-            user = User(username=username, email=email, password=hashed_password)
-            db.session.add(user)
-            db.session.commit()
-
-            return jsonify({"message": "User registered successfully!"}), 200
-
-        except Exception as e:
-            print(f"Error during registration: {e}")
-            return jsonify({"error": str(e)}), 500
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        data = request.json
-        user = User.query.filter_by(username=data['username']).first()
-        if user and check_password_hash(user.password, data['password']):
-            session['user_id'] = user.id
-            session['username'] = user.username
-            return jsonify({"message": "Login successful!"}), 200
-        else:
-            return jsonify({"error": "Invalid credentials"}), 401
-    return render_template('login.html')
-
-@app.route('/logout')
-def logout():
-    session.pop('user_id', None)
-    return redirect(url_for('home'))
-
-@app.route('/check_session', methods=['GET'])
-def check_session():
-    if 'user_id' in session:
-        return jsonify({"status": "logged_in", "user_id": session['user_id']}), 200
-    else:
-        return jsonify({"status": "not_logged_in"}), 401
-
-@app.route('/dashboard')
-def dashboard():
-    if 'user_id' not in session:
-        return redirect(url_for('home'))
-
-    user_id = session['user_id']
-    user = db.session.get(User, user_id)
-
-    # Retrieve the last conversation
-    last_conversation = Conversation.query.filter_by(user_id=user_id).order_by(Conversation.created_at.desc()).first()
-
-    # Generate an initial message from the chatbot
-    initial_message = f"Hi {user.username}! Welcome back! 😊<br><br>"
-    if last_conversation:
-        # Analyze the last conversation and generate a summary
-        summary = generate_conversation_summary(last_conversation.message, last_conversation.response)
-        initial_message += f"Last time, we talked about {summary}.<br><br>How can I assist you today?"
-    else:
-        initial_message += "How can I assist you with your hotel reservation today?"
-
-    return render_template('dashboard.html', username=user.username, initial_message=initial_message)
-
+# Define the generate_conversation_summary function
 def generate_conversation_summary(user_message, bot_response):
     """
     Generate a conversational summary using the Llama API.
@@ -164,25 +70,211 @@ def generate_conversation_summary(user_message, bot_response):
         print(f"[ERROR] Failed to generate summary: {e}")
         return f"your last message: '{user_message}'"
 
-@app.route('/chat', methods=['POST'])
+# Check for follow-ups
+def check_follow_ups():
+    with app.app_context():  # Ensure database operations run within Flask's context
+        conversations = Conversation.query.filter(Conversation.follow_up_date <= datetime.now()).all()
+        for conversation in conversations:
+            send_follow_up_message(conversation.user_id)
+
+# Send follow-up message
+def send_follow_up_message(user_id):
+    user = db.session.get(User, user_id)
+    message = "Just checking in! Do you need help with anything else for your upcoming reservation?"
+    send_message_to_user(user, message)
+
+# Placeholder function for sending messages
+def send_message_to_user(user, message):
+    print(f"Follow-up sent to {user.username}: {message}")
+
+# Schedule follow-up task
+scheduler.add_job(func=check_follow_ups, trigger="interval", days=1)
+scheduler.start()
+
+
+
+@app.route('/register', methods=['GET', 'POST', 'OPTIONS'])
+def register():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
+    if request.method == 'POST':
+        try:
+            data = request.get_json()
+            username = data['username']
+            email = data['email']
+            password = data['password']
+
+            # Check if username or email already exists
+            existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
+            if existing_user:
+                return jsonify({"error": "Username or email already exists. Please choose another one."}), 400
+
+            # Hash the password and create a new user
+            hashed_password = generate_password_hash(password)
+            user = User(username=username, email=email, password=hashed_password)
+            db.session.add(user)
+            db.session.commit()
+
+            return jsonify({"message": "User registered successfully!"}), 200
+
+        except Exception as e:
+            print(f"Error during registration: {e}")
+            return jsonify({"error": str(e)}), 500
+
+
+
+
+
+
+
+@app.route('/login', methods=['POST', 'OPTIONS'])
+def login():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
+    if request.method == 'POST':
+        data = request.json
+        user = User.query.filter_by(username=data['username']).first()
+        if user and check_password_hash(user.password, data['password']):
+            session['user_id'] = user.id  # Set session
+            session['username'] = user.username
+            print("[DEBUG] Session after login:", session)  # Debugging line
+
+            # Create a response object
+            response = make_response(jsonify({"message": "Login successful!", "userId": user.id}), 200)
+            
+            # Explicitly set the session cookie with proper attributes
+            response.set_cookie(
+                'session',  # Cookie name
+                value=app.session_interface.get_signing_serializer(app).dumps(dict(session)),
+                httponly=True,  # Prevent client-side script access
+                samesite='Lax',  # Allow cross-origin requests
+                secure=False,  # Set to True in production with HTTPS
+                max_age=86400,  # Set expiry to 1 day (in seconds)
+                path='/',  # Ensure the cookie is sent for all paths
+            )
+            print("[DEBUG] Set-Cookie header:", response.headers.get('Set-Cookie'))  # Debugging line
+            return response
+        else:
+            return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route('/logout', methods=['GET', 'OPTIONS'])
+def logout():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
+    session.pop('user_id', None)
+    return redirect(url_for('home'))
+
+@app.route('/check_session', methods=['GET', 'OPTIONS'])
+def check_session():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
+    if 'user_id' in session:
+        return jsonify({"status": "logged_in", "user_id": session['user_id']}), 200
+    else:
+        return jsonify({"status": "not_logged_in"}), 401
+
+@app.route('/dashboard', methods=['GET', 'OPTIONS'])
+def dashboard():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
+    if 'user_id' not in session:
+        return redirect(url_for('home'))
+
+    user_id = session['user_id']
+    user = db.session.get(User, user_id)
+
+    # Retrieve the last conversation
+    last_conversation = Conversation.query.filter_by(user_id=user_id).order_by(Conversation.created_at.desc()).first()
+
+    # Generate an initial message from the chatbot
+    initial_message = f"Hi {user.username}! Welcome back! 😊<br><br>"
+    if last_conversation:
+        # Analyze the last conversation and generate a summary
+        summary = generate_conversation_summary(last_conversation.message, last_conversation.response)
+        initial_message += f"Last time, we talked about {summary}.<br><br>How can I assist you today?"
+    else:
+        initial_message += "How can I assist you with your hotel reservation today?"
+
+
+@app.route('/chat', methods=['POST', 'OPTIONS'])
 def chat():
     try:
+        if request.method == 'OPTIONS':
+            # Handle preflight request
+            print("[DEBUG] Handling OPTIONS preflight request")  # Debugging line
+            response = jsonify({"message": "Preflight request handled"})
+            response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+            response.headers.add('Access-Control-Allow-Methods', 'POST')
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response
+
+        print("[DEBUG] Handling POST request to /chat")  # Debugging line
+        print("[DEBUG] Session in /chat:", session)  # Debugging line
+
+        # Check if the user is logged in
         if 'user_id' not in session:
+            print("[DEBUG] User not logged in. Session:", session)  # Debugging line
             return jsonify({"error": "You must be logged in to chat"}), 403
 
+        print("[DEBUG] User is logged in. User ID:", session['user_id'])  # Debugging line
+
+        # Parse the request data
         data = request.json
+        print("[DEBUG] Request data:", data)  # Debugging line
+
         user_input = preprocess_input(data.get("message"))  # Preprocess input
+        print("[DEBUG] Preprocessed user input:", user_input)  # Debugging line
 
         # Retrieve user data
         user_id = session['user_id']
         user = db.session.get(User, user_id)
+        print("[DEBUG] Retrieved user:", user.username)  # Debugging line
 
         # Detect intent and extract entities
         intent = detect_intent(user_input)  # Detect intent
         entities = extract_entities(user_input)  # Extract entities (e.g., check-in date, room type)
+        print("[DEBUG] Detected intent:", intent)  # Debugging line
+        print("[DEBUG] Extracted entities:", entities)  # Debugging line
 
         # Store key reservation details in memory
         if intent in ["book_room", "modify_reservation"]:
+            print("[DEBUG] Storing reservation details in memory")  # Debugging line
             for key, value in entities.items():
                 memory = Memory(user_id=user_id, key=key, value=value)
                 db.session.add(memory)
@@ -191,10 +283,12 @@ def chat():
         # Retrieve stored memory
         memories = Memory.query.filter_by(user_id=user_id).all()
         memory_context = {memory.key: memory.value for memory in memories}
+        print("[DEBUG] Retrieved memory context:", memory_context)  # Debugging line
 
         # Retrieve conversation history for context
         conversations = Conversation.query.filter_by(user_id=user_id).order_by(Conversation.created_at.desc()).limit(5).all()
         conversation_history = [{"role": "user", "content": conv.message} for conv in conversations] + [{"role": "assistant", "content": conv.response} for conv in conversations]
+        print("[DEBUG] Retrieved conversation history:", conversation_history)  # Debugging line
 
         # Generate dynamic system message
         system_message = f"You are a hotel reservation assistant. The user's name is {user.username}."
@@ -209,8 +303,11 @@ def chat():
         elif intent == "modify_reservation":
             system_message += " The user wants to modify their reservation. Ask for the new details."
 
+        print("[DEBUG] Generated system message:", system_message)  # Debugging line
+
         # Prepare messages for Llama API
         messages = [{"role": "system", "content": system_message}] + conversation_history + [{"role": "user", "content": user_input}]
+        print("[DEBUG] Prepared messages for Llama API:", messages)  # Debugging line
 
         # Stream the AI response and save the conversation
         def generate():
@@ -225,6 +322,8 @@ def chat():
                 "max_tokens": 1000,
                 "stream": True  # Enable streaming
             }
+            print("[DEBUG] Sending request to Llama API with payload:", payload)  # Debugging line
+
             full_response = ""  # Accumulate the full response
             with requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
                 response.raise_for_status()
@@ -232,18 +331,23 @@ def chat():
                 for chunk in response.iter_content(chunk_size=None):
                     if chunk:
                         buffer += chunk.decode("utf-8")
+                        print("[DEBUG] Raw chunk from Llama API:", buffer)  # Log raw chunk
                         if buffer.endswith(('.', '!', '?', '\n')) or len(buffer) > 50:
-                            # Extract the bot's response content from the streaming data
                             try:
                                 data = json.loads(buffer.replace("data: ", "").strip())
+                                print("[DEBUG] Parsed chunk data:", data)  # Log parsed data
                                 if "choices" in data and len(data["choices"]) > 0:
                                     content = data["choices"][0]["delta"].get("content", "")
                                     if content:
                                         full_response += content
+                                        print("[DEBUG] Accumulated response:", full_response)  # Log accumulated response
+                                        yield content  # Yield only the content
                             except json.JSONDecodeError:
+                                print("[DEBUG] JSON decode error while processing streaming data")
                                 pass
-                            yield buffer
                             buffer = ""
+
+            print("[DEBUG] Full response from Llama API:", full_response)  # Debugging line
 
             # Ensure database operations run within Flask's application context
             with app.app_context():  # Push a new application context for DB operations
@@ -256,19 +360,32 @@ def chat():
                     )
                     db.session.add(conversation)
                     db.session.commit()
-                    print(f"[DEBUG] Conversation saved: {conversation.id}")
+                    print(f"[DEBUG] Conversation saved: {conversation.id}")  # Debugging line
                 except Exception as e:
-                    print(f"[ERROR] Failed to save conversation: {e}")
+                    print(f"[ERROR] Failed to save conversation: {e}")  # Debugging line
                     db.session.rollback()
 
-        return Response(generate(), mimetype='text/plain')  # Use text/plain for streaming
+        # Add CORS headers to the streaming response
+        response = Response(generate(), mimetype='text/plain')
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
 
     except Exception as e:
-        print(f"[ERROR] Chat processing error: {e}")
+        print(f"[ERROR] Chat processing error: {e}")  # Debugging line
         return jsonify({"error": "An error occurred while processing the chat."}), 500
-
-@app.route('/conversation_history', methods=['GET'])
+    
+@app.route('/conversation_history', methods=['GET', 'OPTIONS'])
 def conversation_history():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
     if 'user_id' not in session:
         return redirect(url_for('login'))
 
@@ -283,14 +400,18 @@ def conversation_history():
             "date": conversation.created_at.strftime("%Y-%m-%d %H:%M:%S")  # Format the date
         })
 
-    return render_template('conversation_history.html', conversation_history=conversation_history)
-# Add these routes to app.py
 
-@app.route('/check_availability', methods=['POST'])
+@app.route('/check_availability', methods=['POST', 'OPTIONS'])
 def check_availability():
-    """
-    Check room availability based on user input.
-    """
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
     try:
         data = request.json
         check_in_date = datetime.strptime(data.get("check_in_date"), "%Y-%m-%d")
@@ -320,11 +441,17 @@ def check_availability():
         print(f"[ERROR] Availability check failed: {e}")
         return jsonify({"error": "Failed to check availability."}), 500
 
-@app.route('/book_room', methods=['POST'])
+@app.route('/book_room', methods=['POST', 'OPTIONS'])
 def book_room():
-    """
-    Book a room for the user.
-    """
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
     try:
         if 'user_id' not in session:
             return jsonify({"error": "You must be logged in to book a room."}), 403
@@ -360,11 +487,18 @@ def book_room():
         print(f"[ERROR] Booking failed: {e}")
         return jsonify({"error": "Failed to book the room."}), 500
 
-@app.route('/view_reservations', methods=['GET'])
+@app.route('/view_reservations', methods=['GET', 'OPTIONS'])
 def view_reservations():
-    """
-    View all reservations for the logged-in user.
-    """
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = jsonify({"message": "Preflight request handled"})
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
+    print("[DEBUG] Session in /view_reservations:", session)  # Debugging line
     if 'user_id' not in session:
         return jsonify({"error": "You must be logged in to view reservations."}), 403
 
@@ -386,7 +520,6 @@ def view_reservations():
     }
 
     return jsonify(response), 200
-
 
 if __name__ == "__main__":
     with app.app_context():
