@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for, Response
+from flask import Flask, request, jsonify, session, redirect, url_for, Response,stream_with_context
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 import os
@@ -17,12 +17,17 @@ from datetime import datetime
 from nlp_utils import calculate_total_price  # Import the function
 from nlp_utils import get_available_rooms  # Import the function
 from flask import make_response
+from threading import Thread
+import logging
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 # Enable CORS for all routes, allow credentials, and specify the frontend origin
 CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 # Determine if the app is running in production
 is_production = os.getenv("FLASK_ENV") == "production"
 # Configure PostgreSQL database
@@ -236,7 +241,7 @@ def chat():
     try:
         if request.method == 'OPTIONS':
             # Handle preflight request
-            print("[DEBUG] Handling OPTIONS preflight request")  # Debugging line
+            logger.debug("Handling OPTIONS preflight request")
             response = jsonify({"message": "Preflight request handled"})
             response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
             response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
@@ -244,37 +249,37 @@ def chat():
             response.headers.add('Access-Control-Allow-Credentials', 'true')
             return response
 
-        print("[DEBUG] Handling POST request to /chat")  # Debugging line
-        print("[DEBUG] Session in /chat:", session)  # Debugging line
+        logger.debug("Handling POST request to /chat")
+        logger.debug(f"Session in /chat: {session}")
 
         # Check if the user is logged in
         if 'user_id' not in session:
-            print("[DEBUG] User not logged in. Session:", session)  # Debugging line
+            logger.debug("User not logged in. Session: %s", session)
             return jsonify({"error": "You must be logged in to chat"}), 403
 
-        print("[DEBUG] User is logged in. User ID:", session['user_id'])  # Debugging line
+        logger.debug(f"User is logged in. User ID: {session['user_id']}")
 
         # Parse the request data
         data = request.json
-        print("[DEBUG] Request data:", data)  # Debugging line
+        logger.debug(f"Request data: {data}")
 
         user_input = preprocess_input(data.get("message"))  # Preprocess input
-        print("[DEBUG] Preprocessed user input:", user_input)  # Debugging line
+        logger.debug(f"Preprocessed user input: {user_input}")
 
         # Retrieve user data
         user_id = session['user_id']
         user = db.session.get(User, user_id)
-        print("[DEBUG] Retrieved user:", user.username)  # Debugging line
+        logger.debug(f"Retrieved user: {user.username}")
 
         # Detect intent and extract entities
         intent = detect_intent(user_input)  # Detect intent
-        entities = extract_entities(user_input)  # Extract entities (e.g., check-in date, room type)
-        print("[DEBUG] Detected intent:", intent)  # Debugging line
-        print("[DEBUG] Extracted entities:", entities)  # Debugging line
+        entities = extract_entities(user_input)  # Extract entities
+        logger.debug(f"Detected intent: {intent}")
+        logger.debug(f"Extracted entities: {entities}")
 
         # Store key reservation details in memory
         if intent in ["book_room", "modify_reservation"]:
-            print("[DEBUG] Storing reservation details in memory")  # Debugging line
+            logger.debug("Storing reservation details in memory")
             for key, value in entities.items():
                 memory = Memory(user_id=user_id, key=key, value=value)
                 db.session.add(memory)
@@ -283,12 +288,12 @@ def chat():
         # Retrieve stored memory
         memories = Memory.query.filter_by(user_id=user_id).all()
         memory_context = {memory.key: memory.value for memory in memories}
-        print("[DEBUG] Retrieved memory context:", memory_context)  # Debugging line
+        logger.debug(f"Retrieved memory context: {memory_context}")
 
         # Retrieve conversation history for context
         conversations = Conversation.query.filter_by(user_id=user_id).order_by(Conversation.created_at.desc()).limit(5).all()
         conversation_history = [{"role": "user", "content": conv.message} for conv in conversations] + [{"role": "assistant", "content": conv.response} for conv in conversations]
-        print("[DEBUG] Retrieved conversation history:", conversation_history)  # Debugging line
+        logger.debug(f"Retrieved conversation history: {conversation_history}")
 
         # Generate dynamic system message
         system_message = f"You are a hotel reservation assistant. The user's name is {user.username}."
@@ -303,76 +308,76 @@ def chat():
         elif intent == "modify_reservation":
             system_message += " The user wants to modify their reservation. Ask for the new details."
 
-        print("[DEBUG] Generated system message:", system_message)  # Debugging line
+        logger.debug(f"Generated system message: {system_message}")
 
         # Prepare messages for Llama API
         messages = [{"role": "system", "content": system_message}] + conversation_history + [{"role": "user", "content": user_input}]
-        print("[DEBUG] Prepared messages for Llama API:", messages)  # Debugging line
+        logger.debug(f"Prepared messages for Llama API: {messages}")
 
         # Stream the AI response and save the conversation
         def generate():
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": "llama3.2-11b-vision",  # Replace with your desired model
-                "messages": messages,
-                "temperature": 0.5,
-                "max_tokens": 1000,
-                "stream": True  # Enable streaming
-            }
-            print("[DEBUG] Sending request to Llama API with payload:", payload)  # Debugging line
+           headers = {
+               "Authorization": f"Bearer {api_key}",
+               "Content-Type": "application/json"
+           }
+           payload = {
+               "model": "llama3.2-11b-vision",  # Replace with your desired model
+               "messages": messages,
+               "temperature": 0.5,
+               "max_tokens": 1000,
+               "stream": True  # Enable streaming
+           }
+           logger.debug(f"Sending request to Llama API with payload: {payload}")
 
-            full_response = ""  # Accumulate the full response
-            with requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
-                response.raise_for_status()
-                buffer = ""
-                for chunk in response.iter_content(chunk_size=None):
-                    if chunk:
-                        buffer += chunk.decode("utf-8")
-                        print("[DEBUG] Raw chunk from Llama API:", buffer)  # Log raw chunk
-                        if buffer.endswith(('.', '!', '?', '\n')) or len(buffer) > 50:
-                            try:
-                                data = json.loads(buffer.replace("data: ", "").strip())
-                                print("[DEBUG] Parsed chunk data:", data)  # Log parsed data
-                                if "choices" in data and len(data["choices"]) > 0:
-                                    content = data["choices"][0]["delta"].get("content", "")
-                                    if content:
+           full_response = ""  # Accumulate the full response
+           with requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, stream=True) as response:
+               response.raise_for_status()
+               for chunk in response.iter_content(chunk_size=None):
+                   if chunk:
+                       chunk_str = chunk.decode("utf-8")
+                       logger.debug(f"Raw chunk from Llama API: {chunk_str}")
+                       if chunk_str.startswith("data:"):
+                           try:
+                               data = json.loads(chunk_str[5:].strip())
+                               if "choices" in data and len(data["choices"]) > 0:
+                                   content = data["choices"][0]["delta"].get("content", "")
+                                   if content:
                                         full_response += content
-                                        print("[DEBUG] Accumulated response:", full_response)  # Log accumulated response
-                                        yield content  # Yield only the content
-                            except json.JSONDecodeError:
-                                print("[DEBUG] JSON decode error while processing streaming data")
-                                pass
-                            buffer = ""
+                                        logger.debug(f"Accumulated response: {full_response}")
+                                        yield f"data: {json.dumps({'content': content})}\n\n"  # Stream JSON-formatted chunks
+                           except json.JSONDecodeError:
+                                logger.debug("JSON decode error while processing streaming data")
+                                continue
 
-            print("[DEBUG] Full response from Llama API:", full_response)  # Debugging line
+           logger.debug(f"Full response from Llama API: {full_response}")
 
-            # Ensure database operations run within Flask's application context
-            with app.app_context():  # Push a new application context for DB operations
-                try:
-                    conversation = Conversation(
-                        user_id=user_id,
-                        message=user_input,
-                        response=full_response.strip(),  # Save only the bot's response content
-                        created_at=datetime.utcnow()
-                    )
-                    db.session.add(conversation)
-                    db.session.commit()
-                    print(f"[DEBUG] Conversation saved: {conversation.id}")  # Debugging line
-                except Exception as e:
-                    print(f"[ERROR] Failed to save conversation: {e}")  # Debugging line
-                    db.session.rollback()
+    # Save the conversation in a background thread
+           def save_conversation():
+               with app.app_context():  # Push a new application context for DB operations
+                   try:
+                       conversation = Conversation(
+                           user_id=user_id,
+                           message=user_input,
+                           response=full_response.strip(),  # Save only the bot's response content
+                           created_at=datetime.now(timezone.utc)  # Use timezone-aware datetime
+                       )
+                       db.session.add(conversation)
+                       db.session.commit()
+                       logger.debug(f"Conversation saved: {conversation.id}")
+                   except Exception as e:
+                       logger.error(f"Failed to save conversation: {e}")
+                       db.session.rollback()
+
+           Thread(target=save_conversation).start()
 
         # Add CORS headers to the streaming response
-        response = Response(generate(), mimetype='text/plain')
+        response = Response(stream_with_context(generate()), mimetype='text/plain')
         response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response
 
     except Exception as e:
-        print(f"[ERROR] Chat processing error: {e}")  # Debugging line
+        logger.error(f"Chat processing error: {e}")
         return jsonify({"error": "An error occurred while processing the chat."}), 500
     
 @app.route('/conversation_history', methods=['GET', 'OPTIONS'])
